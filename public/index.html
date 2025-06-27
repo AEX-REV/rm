@@ -1,1 +1,67 @@
-<!DOCTYPE html><html><body><h1>Dummy UI</h1></body></html>
+<!DOCTYPE html>
+<html lang="da">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Revenue Management</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 text-gray-900 font-sans">
+  <div class="max-w-4xl mx-auto mt-10 p-6 bg-white shadow rounded-lg">
+    <h1 class="text-2xl font-bold mb-4">✈️ Revenue Management Forslag</h1>
+    
+    <label for="threshold" class="block text-sm font-medium text-gray-700 mb-2">
+      Bookingstigningstærskel (%)
+    </label>
+    <input type="range" id="threshold" min="10" max="100" value="20" step="5" class="w-full mb-2">
+    <div class="text-right text-sm text-gray-500 mb-4">
+      <span id="threshold-value">20%</span>
+    </div>
+
+    <div id="status" class="text-gray-600 mb-4">Indlæser forslag...</div>
+
+    <ul id="suggestions" class="space-y-4"></ul>
+  </div>
+
+  <script>
+    const thresholdSlider = document.getElementById("threshold");
+    const thresholdValue = document.getElementById("threshold-value");
+    const status = document.getElementById("status");
+    const suggestionsList = document.getElementById("suggestions");
+
+    function fetchSuggestions() {
+      const threshold = thresholdSlider.value;
+      thresholdValue.textContent = `${threshold}%`;
+      status.textContent = "Henter forslag...";
+      suggestionsList.innerHTML = "";
+
+      fetch(`/api/suggestions?threshold=${threshold}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.length === 0) {
+            status.textContent = "Ingen forslag at vise.";
+            return;
+          }
+          status.textContent = `${data.length} forslag fundet:`;
+          data.forEach(s => {
+            const li = document.createElement("li");
+            li.className = "border rounded p-3 bg-gray-100";
+            li.innerHTML = `
+              <strong>✈️ ${s.flightNumber} den ${s.flightDate}</strong><br>
+              ${s.bookingsThisYear} booket i år vs ${s.bookingsLastYear} sidste år<br>
+              ${s.recommendation}
+            `;
+            suggestionsList.appendChild(li);
+          });
+        })
+        .catch(err => {
+          status.textContent = "Fejl ved hentning af forslag.";
+          console.error(err);
+        });
+    }
+
+    thresholdSlider.addEventListener("input", fetchSuggestions);
+    window.addEventListener("load", fetchSuggestions);
+  </script>
+</body>
+</html>
