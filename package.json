@@ -1,0 +1,12 @@
+{
+  "name": "rm-backend",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.8",
+    "csv-parser": "^3.0.0"
+  }
+}
