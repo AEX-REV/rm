@@ -11,7 +11,7 @@ const DATA_PATH = path.join(__dirname, 'public', 'data', 'current_snapshot.csv')
 
 // Middleware
 app.use(express.static('public'));
-app.use(bodyParser.text({ type: '*/*' }));
+app.use(bodyParser.text({ type: '*/*', limit: '100mb' }));
 
 // Health check
 app.get('/ping', (req, res) => {
