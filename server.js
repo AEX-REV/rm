@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -6,28 +7,33 @@ const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+const DATA_PATH = path.join(__dirname, 'data', 'current_snapshot.csv');
 
-const DATA_FILE = path.join(__dirname, 'data', 'current_snapshot.csv');
+// Middleware
 app.use(express.static('public'));
-app.use(bodyParser.text({ type: 'text/plain' }));
+app.use(bodyParser.text({ type: '*/*' }));
 
+// Health check
+app.get('/ping', (req, res) => {
+  res.send('pong');
+});
+
+// Parse CSV bookings
 function parseBookings(callback) {
   const bookings = [];
 
-  if (!fs.existsSync(DATA_FILE)) {
-    console.log("⚠️ CSV ikke fundet");
-    return callback([]);
-  }
-
-  fs.createReadStream(DATA_FILE)
+  fs.createReadStream(DATA_PATH)
     .pipe(csv())
     .on('data', (row) => {
+      if (!row.FlightDate || !row.BookingDate) return;
+
       bookings.push({
-        BookingDate: new Date(row.BookingDate),
-        FlightDate: new Date(row.FlightDate),
-        FlightNumber: row.str_Flight_Nmbrs,
-        RBD: row.str_Fare_Class_Short ? row.str_Fare_Class_Short.charAt(0) : '',
-        Price: parseFloat(row.TotalChargeAmount)
+        FlightDate: new Date(row.FlightDate.split('T')[0]),
+        BookingDate: new Date(row.BookingDate.split('T')[0]),
+        RBD: row.RBD || row.str_Fare_Class_Short?.charAt(0) || '',
+        FlightNumber: row.FlightNumber || row.str_Flight_Nmbrs || '',
+        Price: parseFloat(row.TotalChargeAmount || '0'),
+        Year: new Date(row.FlightDate).getFullYear(),
       });
     })
     .on('end', () => {
@@ -35,61 +41,54 @@ function parseBookings(callback) {
     });
 }
 
+// Generer forslag
 function generateSuggestions(bookings, thresholdPercent = 20) {
   const suggestions = [];
-  const grouped = {};
-
   const today = new Date();
   const thisYear = today.getFullYear();
-  const lastYear = thisYear - 1;
 
-  function getComparableDate(date) {
-    const d = new Date(date);
-    const weekday = d.getDay();
-    const target = new Date(d);
-    target.setFullYear(lastYear);
-    while (target.getDay() !== weekday) {
-      target.setDate(target.getDate() + 1);
-    }
-    return target;
-  }
+  // Grupper efter flight number og ugedag
+  const grouped = {};
 
-  bookings.forEach((b) => {
-    const key = `${b.FlightNumber}_${b.FlightDate.toISOString().split('T')[0]}`;
+  bookings.forEach(b => {
+    if (!b.FlightNumber || isNaN(b.FlightDate)) return;
+
+    const weekday = b.FlightDate.getDay(); // 0 = søndag
+    const key = `${b.FlightNumber}_${weekday}`;
     if (!grouped[key]) grouped[key] = [];
     grouped[key].push(b);
   });
 
-  Object.entries(grouped).forEach(([key, group]) => {
-    const [flightNumber, dateStr] = key.split('_');
-    const flightDate = new Date(dateStr);
-    const daysToFlight = Math.floor((flightDate - today) / (1000 * 60 * 60 * 24));
-    const thisYearData = group.filter(b => b.FlightDate.getFullYear() === thisYear);
-    const comparisonDate = getComparableDate(flightDate);
-    const lastYearData = bookings.filter(b =>
-      b.FlightDate.toDateString() === comparisonDate.toDateString() &&
-      b.FlightNumber === flightNumber
-    );
+  for (const [key, flights] of Object.entries(grouped)) {
+    const [flightNumber, weekday] = key.split('_');
+    const currentYear = flights.filter(f => f.Year === thisYear);
+    const previousYear = flights.filter(f => f.Year === thisYear - 1);
 
-    if (thisYearData.length && lastYearData.length) {
-      const thisCount = thisYearData.length;
-      const lastCount = lastYearData.length;
+    if (currentYear.length && previousYear.length) {
+      // Brug første flight i år som reference
+      const refFlight = currentYear[0];
+      const daysToDeparture = Math.floor((refFlight.FlightDate - today) / (1000 * 60 * 60 * 24));
 
-      if (lastCount > 0 && thisCount > lastCount * (1 + thresholdPercent / 100) && daysToFlight > 10) {
-        suggestions.push({
-          flight: `${flightNumber} den ${flightDate.toISOString().split('T')[0]}`,
-          bookingsThisYear: thisCount,
-          bookingsLastYear: lastCount,
-          daysToFlight,
-          recommendation: `📈 Hæv pris – ${thisCount} bookinger i år vs ${lastCount} sidste år.`
-        });
+      if (daysToDeparture > 10) {
+        const ratio = currentYear.length / previousYear.length;
+        if (ratio > 1 + thresholdPercent / 100) {
+          suggestions.push({
+            flight: flightNumber,
+            weekday: parseInt(weekday),
+            bookingsThisYear: currentYear.length,
+            bookingsLastYear: previousYear.length,
+            daysToDeparture,
+            recommendation: `Hæv prisen – ${currentYear.length} bookinger i år vs ${previousYear.length} sidste år.`,
+          });
+        }
       }
     }
-  });
+  }
 
   return suggestions;
 }
 
+// GET suggestions endpoint
 app.get('/api/suggestions', (req, res) => {
   const threshold = parseFloat(req.query.threshold) || 20;
   parseBookings((bookings) => {
@@ -98,20 +97,24 @@ app.get('/api/suggestions', (req, res) => {
   });
 });
 
-app.post('/api/upload-csv', (req, res) => {
-  const content = req.body;
-  if (!content) return res.status(400).send("Ingen CSV modtaget");
+// POST upload endpoint
+app.post('/upload', (req, res) => {
+  const rawData = req.body;
+  if (!rawData || typeof rawData !== 'string') {
+    return res.status(400).send('Ugyldig data');
+  }
 
-  fs.writeFile(DATA_FILE, content, (err) => {
+  fs.writeFile(DATA_PATH, rawData, (err) => {
     if (err) {
-      console.error("🚫 Fejl ved gem af CSV:", err);
-      return res.status(500).send("Fejl ved skrivning af fil");
+      console.error('🚫 Fejl ved skrivning af fil:', err);
+      return res.status(500).send('Fejl ved upload');
     }
-    console.log("✅ Ny CSV gemt via Make");
-    res.send("CSV gemt");
+    console.log('✅ Fil uploadet og gemt som current_snapshot.csv');
+    res.send('Upload gennemført');
   });
 });
 
+// Start server
 app.listen(PORT, () => {
   console.log(`✅ RM server kører på http://localhost:${PORT}`);
 });
