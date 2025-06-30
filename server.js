@@ -10,19 +10,21 @@ const PORT = process.env.PORT || 8080;
 
 // CSV-fil skal ligge i public/data så browseren kan hente den
 const DATA_PATH = path.join(__dirname, 'public', 'data', 'current_snapshot.csv');
-
-// Opret mappe hvis den ikke findes
 const dataDir = path.join(__dirname, 'public', 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
+
+// Middleware
 app.use(express.static('public'));
 app.use(bodyParser.text({ type: '*/*', limit: '100mb' }));
 
+// Health check
 app.get('/ping', (req, res) => {
   res.send('pong');
 });
 
+// Parse CSV bookings
 function parseBookings(callback) {
   const bookings = [];
 
@@ -31,16 +33,13 @@ function parseBookings(callback) {
     .on('data', (row) => {
       if (!row.FlightDate || !row.BookingDate) return;
 
-      const flightDate = new Date(row.FlightDate.split('T')[0]);
-      const bookingDate = new Date(row.BookingDate.split('T')[0]);
-
       bookings.push({
-        FlightDate: flightDate,
-        BookingDate: bookingDate,
+        FlightDate: new Date(row.FlightDate.split('T')[0]),
+        BookingDate: new Date(row.BookingDate.split('T')[0]),
         RBD: row.RBD || row.str_Fare_Class_Short?.charAt(0) || '',
         FlightNumber: row.FlightNumber || row.str_Flight_Nmbrs || '',
         Price: parseFloat(row.TotalChargeAmount || '0'),
-        Year: flightDate.getFullYear(),
+        Year: new Date(row.FlightDate).getFullYear(),
       });
     })
     .on('end', () => {
@@ -48,16 +47,15 @@ function parseBookings(callback) {
     });
 }
 
+// Suggestions (unchanged)
 function generateSuggestions(bookings, thresholdPercent = 20) {
   const suggestions = [];
   const today = new Date();
   const thisYear = today.getFullYear();
-
   const grouped = {};
 
   bookings.forEach(b => {
     if (!b.FlightNumber || isNaN(b.FlightDate)) return;
-
     const weekday = b.FlightDate.getDay();
     const key = `${b.FlightNumber}_${weekday}`;
     if (!grouped[key]) grouped[key] = [];
@@ -88,58 +86,61 @@ function generateSuggestions(bookings, thresholdPercent = 20) {
       }
     }
   }
-
   return suggestions;
 }
 
-function forecastBookings(bookings) {
-  const forecasts = [];
-  const today = new Date();
-  const thisYear = today.getFullYear();
-  const grouped = {};
+// Forecast endpoint med 3 måneders horisont og forbedret metode
+app.get('/api/forecast', (req, res) => {
+  parseBookings((bookings) => {
+    const today = new Date();
+    const threeMonthsAhead = new Date();
+    threeMonthsAhead.setMonth(threeMonthsAhead.getMonth() + 3);
+    const thisYear = today.getFullYear();
+    const lastYear = thisYear - 1;
 
-  bookings.forEach(b => {
-    const flightNumber = b.FlightNumber;
-    const weekday = b.FlightDate.getDay();
-    const daysBefore = Math.floor((b.FlightDate - b.BookingDate) / (1000 * 60 * 60 * 24));
-    const key = `${flightNumber}_${weekday}`;
+    // Filtrer fremtidige afgange
+    const futureFlights = bookings.filter(b =>
+      b.FlightDate >= today &&
+      b.FlightDate <= threeMonthsAhead &&
+      b.Year === thisYear
+    );
 
-    if (!grouped[key]) grouped[key] = [];
-    grouped[key].push({ ...b, daysBefore });
-  });
+    const allLastYear = bookings.filter(b => b.Year === lastYear);
 
-  for (const [key, entries] of Object.entries(grouped)) {
-    const [flightNumber, weekday] = key.split('_');
-    const current = entries.filter(e => e.Year === thisYear);
-    const past = entries.filter(e => e.Year === thisYear - 1);
+    const forecasts = [];
 
-    if (!current.length || !past.length) continue;
+    futureFlights.forEach(flight => {
+      const flightNumber = flight.FlightNumber;
+      const weekday = flight.FlightDate.getDay();
+      const daysToDeparture = Math.floor((flight.FlightDate - today) / (1000 * 60 * 60 * 24));
 
-    const sample = current[0];
-    const daysToDeparture = Math.floor((sample.FlightDate - today) / (1000 * 60 * 60 * 24));
-    const comparable = past.filter(p => p.daysBefore <= daysToDeparture + 1 && p.daysBefore >= daysToDeparture - 1);
+      // Samme fly og ugedag sidste år
+      const similarLastYear = allLastYear.filter(b => {
+        return b.FlightNumber === flightNumber &&
+          b.FlightDate.getDay() === weekday &&
+          Math.abs((flight.FlightDate.getTime() - b.FlightDate.getTime()) / (1000 * 60 * 60 * 24)) <= 6;
+      });
 
-    const total = comparable.length;
-    const sumPrice = comparable.reduce((acc, c) => acc + c.Price, 0);
+      const similarCount = similarLastYear.length;
+      const similarRevenue = similarLastYear.reduce((acc, b) => acc + b.Price, 0);
 
-    const avgPassengers = total / (daysToDeparture === 0 ? 1 : 1);
-    const avgRevenue = sumPrice / (daysToDeparture === 0 ? 1 : 1);
-
-    forecasts.push({
-      flight: flightNumber,
-      weekday: parseInt(weekday),
-      daysToDeparture,
-      currentBookings: current.length,
-      expectedPassengers: Math.round(avgPassengers),
-      expectedRevenue: Math.round(avgRevenue),
-      note: `Forventer ${Math.round(avgPassengers)} pax og ${Math.round(avgRevenue)} DKK hvis tendens fortsætter.`
+      forecasts.push({
+        flight: flightNumber,
+        flightDate: flight.FlightDate.toISOString().split('T')[0],
+        weekday,
+        daysToDeparture,
+        currentBookings: futureFlights.filter(f => f.FlightNumber === flightNumber && f.FlightDate.getTime() === flight.FlightDate.getTime()).length,
+        expectedPassengers: similarCount,
+        expectedRevenue: Math.round(similarRevenue),
+        note: `Baseret på ${similarCount} pax sidste år og lignende afgange med samme ugedag.`
+      });
     });
-  }
 
-  return forecasts;
-}
+    res.json(forecasts);
+  });
+});
 
-// API endpoints
+// API til forslag
 app.get('/api/suggestions', (req, res) => {
   const threshold = parseFloat(req.query.threshold) || 20;
   parseBookings((bookings) => {
@@ -148,13 +149,7 @@ app.get('/api/suggestions', (req, res) => {
   });
 });
 
-app.get('/api/forecast', (req, res) => {
-  parseBookings((bookings) => {
-    const forecast = forecastBookings(bookings);
-    res.json(forecast);
-  });
-});
-
+// POST upload endpoint
 app.post('/upload', (req, res) => {
   const rawData = req.body;
   if (!rawData || typeof rawData !== 'string') {
@@ -171,6 +166,7 @@ app.post('/upload', (req, res) => {
   });
 });
 
+// Start server
 app.listen(PORT, () => {
   console.log(`✅ RM server kører på http://localhost:${PORT}`);
 });
