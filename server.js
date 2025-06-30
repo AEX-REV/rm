@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 8080;
 const DATA_PATH = path.join(__dirname, 'data', 'current_snapshot.csv');
 
 app.use(express.static('public'));
-app.use(bodyParser.text({ type: '*/*' }));
+app.use(bodyParser.text({ type: '*/*', limit: '100mb' }));
 
 app.get('/ping', (req, res) => {
   res.send('pong');
