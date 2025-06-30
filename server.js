@@ -7,8 +7,15 @@ const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const DATA_PATH = path.join(__dirname, 'data', 'current_snapshot.csv');
 
+// CSV-fil skal ligge i public/data så browseren kan hente den
+const DATA_PATH = path.join(__dirname, 'public', 'data', 'current_snapshot.csv');
+
+// Opret mappe hvis den ikke findes
+const dataDir = path.join(__dirname, 'public', 'data');
+if (!fs.existsSync(dataDir)) {
+  fs.mkdirSync(dataDir, { recursive: true });
+}
 app.use(express.static('public'));
 app.use(bodyParser.text({ type: '*/*', limit: '100mb' }));
 
