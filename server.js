@@ -7,18 +7,15 @@ const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const DATA_PATH = path.join(__dirname, 'public', 'data', 'current_snapshot.csv');
+const DATA_PATH = path.join(__dirname, 'data', 'current_snapshot.csv');
 
-// Middleware
 app.use(express.static('public'));
-app.use(bodyParser.text({ type: '*/*', limit: '100mb' }));
+app.use(bodyParser.text({ type: '*/*' }));
 
-// Health check
 app.get('/ping', (req, res) => {
   res.send('pong');
 });
 
-// Parse CSV bookings
 function parseBookings(callback) {
   const bookings = [];
 
@@ -27,13 +24,16 @@ function parseBookings(callback) {
     .on('data', (row) => {
       if (!row.FlightDate || !row.BookingDate) return;
 
+      const flightDate = new Date(row.FlightDate.split('T')[0]);
+      const bookingDate = new Date(row.BookingDate.split('T')[0]);
+
       bookings.push({
-        FlightDate: new Date(row.FlightDate.split('T')[0]),
-        BookingDate: new Date(row.BookingDate.split('T')[0]),
+        FlightDate: flightDate,
+        BookingDate: bookingDate,
         RBD: row.RBD || row.str_Fare_Class_Short?.charAt(0) || '',
         FlightNumber: row.FlightNumber || row.str_Flight_Nmbrs || '',
         Price: parseFloat(row.TotalChargeAmount || '0'),
-        Year: new Date(row.FlightDate).getFullYear(),
+        Year: flightDate.getFullYear(),
       });
     })
     .on('end', () => {
@@ -41,19 +41,17 @@ function parseBookings(callback) {
     });
 }
 
-// Generer forslag
 function generateSuggestions(bookings, thresholdPercent = 20) {
   const suggestions = [];
   const today = new Date();
   const thisYear = today.getFullYear();
 
-  // Grupper efter flight number og ugedag
   const grouped = {};
 
   bookings.forEach(b => {
     if (!b.FlightNumber || isNaN(b.FlightDate)) return;
 
-    const weekday = b.FlightDate.getDay(); // 0 = søndag
+    const weekday = b.FlightDate.getDay();
     const key = `${b.FlightNumber}_${weekday}`;
     if (!grouped[key]) grouped[key] = [];
     grouped[key].push(b);
@@ -65,7 +63,6 @@ function generateSuggestions(bookings, thresholdPercent = 20) {
     const previousYear = flights.filter(f => f.Year === thisYear - 1);
 
     if (currentYear.length && previousYear.length) {
-      // Brug første flight i år som reference
       const refFlight = currentYear[0];
       const daysToDeparture = Math.floor((refFlight.FlightDate - today) / (1000 * 60 * 60 * 24));
 
@@ -88,7 +85,54 @@ function generateSuggestions(bookings, thresholdPercent = 20) {
   return suggestions;
 }
 
-// GET suggestions endpoint
+function forecastBookings(bookings) {
+  const forecasts = [];
+  const today = new Date();
+  const thisYear = today.getFullYear();
+  const grouped = {};
+
+  bookings.forEach(b => {
+    const flightNumber = b.FlightNumber;
+    const weekday = b.FlightDate.getDay();
+    const daysBefore = Math.floor((b.FlightDate - b.BookingDate) / (1000 * 60 * 60 * 24));
+    const key = `${flightNumber}_${weekday}`;
+
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push({ ...b, daysBefore });
+  });
+
+  for (const [key, entries] of Object.entries(grouped)) {
+    const [flightNumber, weekday] = key.split('_');
+    const current = entries.filter(e => e.Year === thisYear);
+    const past = entries.filter(e => e.Year === thisYear - 1);
+
+    if (!current.length || !past.length) continue;
+
+    const sample = current[0];
+    const daysToDeparture = Math.floor((sample.FlightDate - today) / (1000 * 60 * 60 * 24));
+    const comparable = past.filter(p => p.daysBefore <= daysToDeparture + 1 && p.daysBefore >= daysToDeparture - 1);
+
+    const total = comparable.length;
+    const sumPrice = comparable.reduce((acc, c) => acc + c.Price, 0);
+
+    const avgPassengers = total / (daysToDeparture === 0 ? 1 : 1);
+    const avgRevenue = sumPrice / (daysToDeparture === 0 ? 1 : 1);
+
+    forecasts.push({
+      flight: flightNumber,
+      weekday: parseInt(weekday),
+      daysToDeparture,
+      currentBookings: current.length,
+      expectedPassengers: Math.round(avgPassengers),
+      expectedRevenue: Math.round(avgRevenue),
+      note: `Forventer ${Math.round(avgPassengers)} pax og ${Math.round(avgRevenue)} DKK hvis tendens fortsætter.`
+    });
+  }
+
+  return forecasts;
+}
+
+// API endpoints
 app.get('/api/suggestions', (req, res) => {
   const threshold = parseFloat(req.query.threshold) || 20;
   parseBookings((bookings) => {
@@ -97,7 +141,13 @@ app.get('/api/suggestions', (req, res) => {
   });
 });
 
-// POST upload endpoint
+app.get('/api/forecast', (req, res) => {
+  parseBookings((bookings) => {
+    const forecast = forecastBookings(bookings);
+    res.json(forecast);
+  });
+});
+
 app.post('/upload', (req, res) => {
   const rawData = req.body;
   if (!rawData || typeof rawData !== 'string') {
@@ -114,7 +164,6 @@ app.post('/upload', (req, res) => {
   });
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`✅ RM server kører på http://localhost:${PORT}`);
 });
