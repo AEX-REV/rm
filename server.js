@@ -7,7 +7,7 @@ const bodyParser = require('body-parser');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
-const DATA_PATH = path.join(__dirname, 'data', 'current_snapshot.csv');
+const DATA_PATH = path.join(__dirname, 'public', 'data', 'current_snapshot.csv');
 
 // Middleware
 app.use(express.static('public'));
