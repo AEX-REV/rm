@@ -28,6 +28,11 @@ app.get('/ping', (req, res) => {
 function parseBookings(callback) {
   const bookings = [];
 
+  if (!fs.existsSync(DATA_PATH)) {
+    console.warn('⚠️ Ingen CSV-fil fundet endnu');
+    return callback(bookings);
+  }
+
   fs.createReadStream(DATA_PATH)
     .pipe(csv())
     .on('data', (row) => {
