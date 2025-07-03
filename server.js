@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -48,7 +47,6 @@ function parseBookings(callback) {
     });
 }
 
-// Forbedret forecast endpoint
 app.get('/api/forecast', (req, res) => {
   parseBookings((bookings) => {
     const today = new Date();
@@ -64,22 +62,30 @@ app.get('/api/forecast', (req, res) => {
     );
 
     const allLastYear = bookings.filter(b => b.Year === lastYear);
-
     const forecasts = [];
 
-    futureFlights.forEach(flight => {
+    // Gruppér per unik afgang
+    const uniqueFlights = {};
+    futureFlights.forEach(f => {
+      const key = `${f.FlightNumber}_${f.FlightDate.toISOString().split('T')[0]}`;
+      if (!uniqueFlights[key]) {
+        uniqueFlights[key] = f;
+      }
+    });
+
+    Object.values(uniqueFlights).forEach(flight => {
       const flightNumber = flight.FlightNumber;
       const flightDate = flight.FlightDate;
       const weekday = flightDate.getDay();
       const daysToDeparture = Math.floor((flightDate - today) / (1000 * 60 * 60 * 24));
 
-      // Sammenlign med samme ugedag i samme uge sidste år
-      const lastYearRefDate = new Date(flightDate);
-      lastYearRefDate.setFullYear(lastYear);
+      const lastYearRef = new Date(flightDate);
+      lastYearRef.setFullYear(lastYear);
+
       const sameFlightLastYear = allLastYear.filter(b =>
         b.FlightNumber === flightNumber &&
         b.FlightDate.getDay() === weekday &&
-        Math.abs(b.FlightDate - lastYearRefDate) < 3 * 24 * 60 * 60 * 1000
+        Math.abs(b.FlightDate - lastYearRef) < 3 * 24 * 60 * 60 * 1000
       );
 
       const paxLastYear = sameFlightLastYear.length;
@@ -116,7 +122,6 @@ app.get('/api/forecast', (req, res) => {
   });
 });
 
-// Forslag endpoint
 function generateSuggestions(bookings, thresholdPercent = 20) {
   const suggestions = [];
   const today = new Date();
@@ -155,6 +160,7 @@ function generateSuggestions(bookings, thresholdPercent = 20) {
       }
     }
   }
+
   return suggestions;
 }
 
