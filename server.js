@@ -58,56 +58,48 @@ function forecastBookings(bookings) {
   );
 
   const results = [];
-  const grouped = {};
-  const cumulativePatterns = {};
+  const groupedHistory = {};
 
-  // Opbyg mønstre for prebook per flight + weekday
+  // Opbyg historisk mønster: antal bookinger per dag før afgang for hver FlightNumber + Weekday
   bookings.forEach((b) => {
     const key = `${b.FlightNumber}_${b.Weekday}`;
-    if (!grouped[key]) grouped[key] = [];
-    grouped[key].push(b);
-
-    if (!cumulativePatterns[key]) cumulativePatterns[key] = {};
+    if (!groupedHistory[key]) groupedHistory[key] = {};
     const d = b.DaysBefore;
-    if (!cumulativePatterns[key][d]) cumulativePatterns[key][d] = 0;
-    cumulativePatterns[key][d]++;
+    if (!groupedHistory[key][d]) groupedHistory[key][d] = 0;
+    groupedHistory[key][d]++;
   });
 
-  // Udregn totals pr. dato
-  const totalFlightsPerKey = {};
-  for (const key in grouped) {
-    totalFlightsPerKey[key] = new Set(grouped[key].map(b => b.FlightDate.toISOString().split("T")[0])).size;
+  // Tæl hvor mange historiske afgange der findes per nøgle
+  const historyCounts = {};
+  for (const key in groupedHistory) {
+    const allDays = Object.keys(groupedHistory[key]);
+    historyCounts[key] = new Set(
+      bookings.filter(b => `${b.FlightNumber}_${b.Weekday}` === key)
+              .map(b => b.FlightDate.toISOString().split("T")[0])
+    ).size;
   }
 
   for (const flight of upcomingFlights) {
     const key = `${flight.FlightNumber}_${flight.Weekday}`;
-    const pattern = cumulativePatterns[key] || {};
-    const totalPastFlights = totalFlightsPerKey[key] || 1;
-
+    const daysToDeparture = Math.floor((flight.FlightDate - today) / (1000 * 60 * 60 * 24));
     const currentBookings = bookings.filter(
-      (b) =>
-        b.FlightNumber === flight.FlightNumber &&
-        b.FlightDate.getTime() === flight.FlightDate.getTime()
+      (b) => b.FlightNumber === flight.FlightNumber &&
+             b.FlightDate.getTime() === flight.FlightDate.getTime()
     );
     const currentCount = currentBookings.length;
-    const daysToDeparture = Math.floor((flight.FlightDate - today) / (1000 * 60 * 60 * 24));
 
-    // Beregn gennemsnitlig prebook-kurve
-    const cumulative = {};
-    for (let i = 0; i <= 90; i++) {
-      cumulative[i] = (pattern[i] || 0) / totalPastFlights;
+    const history = groupedHistory[key] || {};
+    const totalFlights = historyCounts[key] || 1;
+
+    let cumulative = 0;
+    for (let d = 90; d >= daysToDeparture; d--) {
+      cumulative += history[d] || 0;
     }
+    const cumulativeRatio = cumulative / (totalFlights || 1);
+    const totalRatio = Object.values(history).reduce((a, b) => a + b, 0) / (totalFlights || 1);
+    const factor = totalRatio > 0 ? cumulativeRatio / totalRatio : 1;
+    const expectedPassengers = Math.round(currentCount / (factor || 1));
 
-    // Beregn antal der normalt er booket op til nu
-    let bookedSoFar = 0;
-    for (let i = 90; i >= daysToDeparture; i--) {
-      bookedSoFar += cumulative[i] || 0;
-    }
-
-    const totalPattern = Object.values(cumulative).reduce((a, b) => a + b, 0);
-    const remainingRatio = totalPattern > 0 ? (totalPattern - bookedSoFar) / totalPattern : 0;
-
-    const expectedPassengers = Math.round(currentCount / (bookedSoFar / totalPattern || 1));
     const avgPrice = currentBookings.reduce((sum, b) => sum + b.Price, 0) / (currentCount || 1);
     const expectedRevenue = Math.round(avgPrice * expectedPassengers);
     const loadFactor = Math.min(100, Math.round((expectedPassengers / SEAT_CAPACITY) * 100));
@@ -121,9 +113,8 @@ function forecastBookings(bookings) {
       expectedPassengers,
       expectedRevenue,
       loadFactor: `${loadFactor}%`,
-      upgradeSuggestion:
-        expectedPassengers > 60 ? "Overvej at åbne op til 64 pladser" : "",
-      note: `Fremskrevet baseret på ${currentCount} pax og ${(1 / (bookedSoFar / totalPattern || 1)).toFixed(2)}x forventet kurve`,
+      upgradeSuggestion: expectedPassengers > 60 ? "Overvej at åbne op til 64 pladser" : "",
+      note: `Fremskrevet baseret på ${currentCount} pax og ${factor.toFixed(2)}x kurve fra historik`,
     });
   }
 
