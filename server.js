@@ -8,23 +8,19 @@ const bodyParser = require('body-parser');
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// CSV-fil skal ligge i public/data så browseren kan hente den
 const DATA_PATH = path.join(__dirname, 'public', 'data', 'current_snapshot.csv');
 const dataDir = path.join(__dirname, 'public', 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-// Middleware
 app.use(express.static('public'));
 app.use(bodyParser.text({ type: '*/*', limit: '100mb' }));
 
-// Health check
 app.get('/ping', (req, res) => {
   res.send('pong');
 });
 
-// Parse CSV bookings
 function parseBookings(callback) {
   const bookings = [];
 
@@ -52,12 +48,12 @@ function parseBookings(callback) {
     });
 }
 
-// Forecast endpoint med 3 måneders horisont og forbedret metode
+// Forbedret forecast endpoint
 app.get('/api/forecast', (req, res) => {
   parseBookings((bookings) => {
     const today = new Date();
     const threeMonthsAhead = new Date();
-    threeMonthsAhead.setMonth(threeMonthsAhead.getMonth() + 3);
+    threeMonthsAhead.setMonth(today.getMonth() + 3);
     const thisYear = today.getFullYear();
     const lastYear = thisYear - 1;
 
@@ -73,39 +69,46 @@ app.get('/api/forecast', (req, res) => {
 
     futureFlights.forEach(flight => {
       const flightNumber = flight.FlightNumber;
-      const weekday = flight.FlightDate.getDay();
-      const daysToDeparture = Math.floor((flight.FlightDate - today) / (1000 * 60 * 60 * 24));
+      const flightDate = flight.FlightDate;
+      const weekday = flightDate.getDay();
+      const daysToDeparture = Math.floor((flightDate - today) / (1000 * 60 * 60 * 24));
 
-      const sameWeekdayLastYear = allLastYear.filter(b => {
-        const dateLastYear = new Date(flight.FlightDate);
-        dateLastYear.setFullYear(lastYear);
-        return (
-          b.FlightNumber === flightNumber &&
-          b.FlightDate.getDay() === weekday &&
-          Math.abs((b.FlightDate - dateLastYear) / (1000 * 60 * 60 * 24)) <= 2
-        );
-      });
+      // Sammenlign med samme ugedag i samme uge sidste år
+      const lastYearRefDate = new Date(flightDate);
+      lastYearRefDate.setFullYear(lastYear);
+      const sameFlightLastYear = allLastYear.filter(b =>
+        b.FlightNumber === flightNumber &&
+        b.FlightDate.getDay() === weekday &&
+        Math.abs(b.FlightDate - lastYearRefDate) < 3 * 24 * 60 * 60 * 1000
+      );
 
-      const paxLastYear = sameWeekdayLastYear.length;
-      const revenueLastYear = sameWeekdayLastYear.reduce((sum, b) => sum + b.Price, 0);
+      const paxLastYear = sameFlightLastYear.length;
+      const revenueLastYear = sameFlightLastYear.reduce((sum, b) => sum + b.Price, 0);
 
-      const expectedPassengers = paxLastYear;
-      const expectedRevenue = revenueLastYear;
-      const loadFactor = (expectedPassengers / 50) * 100;
+      const currentBookings = futureFlights.filter(f =>
+        f.FlightNumber === flightNumber &&
+        f.FlightDate.getTime() === flightDate.getTime()
+      ).length;
+
+      const trendFactor = paxLastYear > 0 ? currentBookings / paxLastYear : 1;
+      const estimatedFinalPax = Math.round(currentBookings * (1 / (1 - daysToDeparture / 60)));
+
+      const expectedPassengers = Math.max(currentBookings, estimatedFinalPax);
+      const expectedRevenue = Math.round(expectedPassengers * (revenueLastYear / (paxLastYear || 1)));
 
       const shouldUpgradeCapacity = expectedPassengers > 60;
 
       forecasts.push({
         flight: flightNumber,
-        flightDate: flight.FlightDate.toISOString().split('T')[0],
+        flightDate: flightDate.toISOString().split('T')[0],
         weekday,
         daysToDeparture,
-        currentBookings: futureFlights.filter(f => f.FlightNumber === flightNumber && f.FlightDate.getTime() === flight.FlightDate.getTime()).length,
+        currentBookings,
         expectedPassengers,
-        expectedRevenue: Math.round(expectedRevenue),
-        loadFactor: Math.round(loadFactor) + '%',
+        expectedRevenue,
+        loadFactor: `${Math.min(Math.round((expectedPassengers / 50) * 100), 100)}%`,
         upgradeSuggestion: shouldUpgradeCapacity ? 'Overvej at åbne op til 64 pladser' : '',
-        note: `Baseret på ${expectedPassengers} pax samme ugedag sidste år`
+        note: `Baseret på ${paxLastYear} pax sidste år og ${trendFactor.toFixed(2)}x bookingtrend`
       });
     });
 
@@ -113,7 +116,7 @@ app.get('/api/forecast', (req, res) => {
   });
 });
 
-// API til forslag
+// Forslag endpoint
 function generateSuggestions(bookings, thresholdPercent = 20) {
   const suggestions = [];
   const today = new Date();
