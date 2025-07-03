@@ -55,12 +55,22 @@ function forecastBookings(bookings) {
   const threeMonthsFromNow = new Date();
   threeMonthsFromNow.setMonth(threeMonthsFromNow.getMonth() + 3);
 
-  const upcomingFlights = bookings.filter(
-    (b) =>
-      b.Year === thisYear &&
-      b.FlightDate >= today &&
-      b.FlightDate <= threeMonthsFromNow
-  );
+const upcomingFlights = [];
+const seen = new Set();
+
+bookings.forEach((b) => {
+  const dateKey = b.FlightDate.toISOString().split("T")[0];
+  const key = `${b.FlightNumber}_${dateKey}`;
+  if (
+    b.Year === thisYear &&
+    b.FlightDate >= today &&
+    b.FlightDate <= threeMonthsFromNow &&
+    !seen.has(key)
+  ) {
+    seen.add(key);
+    upcomingFlights.push(b);
+  }
+});
 
   const results = [];
   const grouped = {};
