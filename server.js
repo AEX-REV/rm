@@ -11,14 +11,18 @@ const DATA_PATH = path.join(__dirname, "public", "data", "current_snapshot.csv")
 const SEAT_CAPACITY = 50;
 const MAX_CAPACITY = 64;
 
+// Sørg for at data-mappen findes
 const dataDir = path.join(__dirname, "public", "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
+// Middleware
 app.use(express.static("public"));
 app.use(bodyParser.text({ type: "*/*", limit: "100mb" }));
 
+// Ping test
 app.get("/ping", (_, res) => res.send("pong"));
 
+// Parser CSV til JS-objekter
 function parseBookings(callback) {
   const bookings = [];
   fs.createReadStream(DATA_PATH)
@@ -44,6 +48,7 @@ function parseBookings(callback) {
     .on("end", () => callback(bookings));
 }
 
+// Forecast-logik
 function forecastBookings(bookings) {
   const today = new Date();
   const thisYear = today.getFullYear();
@@ -119,6 +124,7 @@ function forecastBookings(bookings) {
   return results.sort((a, b) => new Date(a.flightDate) - new Date(b.flightDate));
 }
 
+// Forecast API
 app.get("/api/forecast", (req, res) => {
   parseBookings((bookings) => {
     const forecast = forecastBookings(bookings);
@@ -126,6 +132,7 @@ app.get("/api/forecast", (req, res) => {
   });
 });
 
+// Upload API
 app.post("/upload", (req, res) => {
   const rawData = req.body;
   if (!rawData || typeof rawData !== "string") {
@@ -142,6 +149,7 @@ app.post("/upload", (req, res) => {
   });
 });
 
+// Start server
 app.listen(PORT, () => {
   console.log(`✅ RM server kører på http://localhost:${PORT}`);
 });
