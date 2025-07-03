@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -62,65 +63,79 @@ app.get('/api/forecast', (req, res) => {
     );
 
     const allLastYear = bookings.filter(b => b.Year === lastYear);
+
     const forecasts = [];
+    const seen = new Set();
 
-    // Gruppér per unik afgang
-    const uniqueFlights = {};
-    futureFlights.forEach(f => {
-      const key = `${f.FlightNumber}_${f.FlightDate.toISOString().split('T')[0]}`;
-      if (!uniqueFlights[key]) {
-        uniqueFlights[key] = f;
-      }
-    });
-
-    Object.values(uniqueFlights).forEach(flight => {
+    futureFlights.forEach(flight => {
       const flightNumber = flight.FlightNumber;
       const flightDate = flight.FlightDate;
       const weekday = flightDate.getDay();
+      const key = `${flightNumber}_${flightDate.toISOString().split('T')[0]}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+
       const daysToDeparture = Math.floor((flightDate - today) / (1000 * 60 * 60 * 24));
-
-      const lastYearRef = new Date(flightDate);
-      lastYearRef.setFullYear(lastYear);
-
-      const sameFlightLastYear = allLastYear.filter(b =>
-        b.FlightNumber === flightNumber &&
-        b.FlightDate.getDay() === weekday &&
-        Math.abs(b.FlightDate - lastYearRef) < 3 * 24 * 60 * 60 * 1000
-      );
-
-      const paxLastYear = sameFlightLastYear.length;
-      const revenueLastYear = sameFlightLastYear.reduce((sum, b) => sum + b.Price, 0);
 
       const currentBookings = futureFlights.filter(f =>
         f.FlightNumber === flightNumber &&
         f.FlightDate.getTime() === flightDate.getTime()
-      ).length;
+      );
 
-      const trendFactor = paxLastYear > 0 ? currentBookings / paxLastYear : 1;
-      const estimatedFinalPax = Math.round(currentBookings * (1 / (1 - daysToDeparture / 60)));
+      const lastYearEquivalent = new Date(flightDate);
+      lastYearEquivalent.setFullYear(lastYear);
+      const sameWeek = getISOWeek(flightDate) === getISOWeek(lastYearEquivalent);
+      const lastYearSameFlight = allLastYear.filter(b =>
+        b.FlightNumber === flightNumber &&
+        b.FlightDate.getDay() === weekday &&
+        getISOWeek(b.FlightDate) === getISOWeek(lastYearEquivalent)
+      );
 
-      const expectedPassengers = Math.max(currentBookings, estimatedFinalPax);
+      const paxLastYear = lastYearSameFlight.length;
+      const revenueLastYear = lastYearSameFlight.reduce((sum, b) => sum + b.Price, 0);
+
+      const trendRatio = paxLastYear > 0 ? currentBookings.length / paxLastYear : 1;
+      const expectedPassengers = Math.round(paxLastYear * trendRatio);
       const expectedRevenue = Math.round(expectedPassengers * (revenueLastYear / (paxLastYear || 1)));
+      const loadFactor = Math.min(100, Math.round((expectedPassengers / 50) * 100));
+      const upgrade = expectedPassengers > 60;
+      const confidence = paxLastYear >= 10 ? 'high' : paxLastYear >= 5 ? 'medium' : 'low';
 
-      const shouldUpgradeCapacity = expectedPassengers > 60;
+      const trendline = currentBookings.map(b => {
+        const d = Math.floor((b.FlightDate - b.BookingDate) / (1000 * 60 * 60 * 24));
+        return { daysBeforeDeparture: d };
+      });
+
+      const veryLow = expectedPassengers < paxLastYear * 0.5;
 
       forecasts.push({
         flight: flightNumber,
         flightDate: flightDate.toISOString().split('T')[0],
         weekday,
         daysToDeparture,
-        currentBookings,
+        currentBookings: currentBookings.length,
         expectedPassengers,
         expectedRevenue,
-        loadFactor: `${Math.min(Math.round((expectedPassengers / 50) * 100), 100)}%`,
-        upgradeSuggestion: shouldUpgradeCapacity ? 'Overvej at åbne op til 64 pladser' : '',
-        note: `Baseret på ${paxLastYear} pax sidste år og ${trendFactor.toFixed(2)}x bookingtrend`
+        loadFactor: `${loadFactor}%`,
+        upgradeSuggestion: upgrade ? 'Overvej at åbne op til 64 pladser' : '',
+        trendline,
+        warning: veryLow ? 'Afgang bagud ift. historik' : '',
+        confidence,
+        note: `Baseret på ${paxLastYear} pax sidste år og ${trendRatio.toFixed(2)}x bookingtrend`
       });
     });
 
     res.json(forecasts);
   });
 });
+
+function getISOWeek(date) {
+  const temp = new Date(date.getTime());
+  temp.setHours(0, 0, 0, 0);
+  temp.setDate(temp.getDate() + 4 - (temp.getDay() || 7));
+  const yearStart = new Date(temp.getFullYear(), 0, 1);
+  return Math.ceil((((temp - yearStart) / 86400000) + 1) / 7);
+}
 
 function generateSuggestions(bookings, thresholdPercent = 20) {
   const suggestions = [];
@@ -160,7 +175,6 @@ function generateSuggestions(bookings, thresholdPercent = 20) {
       }
     }
   }
-
   return suggestions;
 }
 

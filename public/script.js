@@ -1,44 +1,79 @@
 
-async function loadForecast() {
-  const res = await fetch('/api/forecast');
-  const data = await res.json();
+document.addEventListener("DOMContentLoaded", async () => {
+  const root = document.getElementById("root");
 
-  const container = document.getElementById('forecast');
-  const table = document.createElement('table');
+  const response = await fetch("/api/forecast");
+  const data = await response.json();
 
-  table.innerHTML = `
-    <thead>
-      <tr>
-        <th>Flight</th>
-        <th>Date</th>
-        <th>Weekday</th>
-        <th>Days to Departure</th>
-        <th>Current Bookings</th>
-        <th>Expected Pax</th>
-        <th>Expected Revenue</th>
-        <th>Load Factor</th>
-        <th>Upgrade</th>
-        <th>Note</th>
-      </tr>
-    </thead>
-    <tbody>
-      ${data.map(f => `
-        <tr>
-          <td>${f.flight}</td>
-          <td>${f.flightDate}</td>
-          <td>${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][f.weekday]}</td>
-          <td>${f.daysToDeparture}</td>
-          <td>${f.currentBookings}</td>
-          <td>${f.expectedPassengers}</td>
-          <td>${f.expectedRevenue}</td>
-          <td>${f.loadFactor}</td>
-          <td>${f.upgradeSuggestion}</td>
-          <td>${f.note}</td>
-        </tr>`).join('')}
-    </tbody>
-  `;
+  let filterText = "";
+  let sortField = "flightDate";
+  let sortAsc = true;
 
-  container.appendChild(table);
-}
+  const renderTable = () => {
+    let filtered = data.filter(item =>
+      item.flight.toLowerCase().includes(filterText.toLowerCase()) ||
+      item.flightDate.includes(filterText)
+    );
 
-loadForecast();
+    filtered.sort((a, b) => {
+      const valA = a[sortField];
+      const valB = b[sortField];
+      if (typeof valA === "string") {
+        return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+      }
+      return sortAsc ? valA - valB : valB - valA;
+    });
+
+    const headers = [
+      ["Flight", "flight"],
+      ["Date", "flightDate"],
+      ["Weekday", "weekday"],
+      ["Days to Departure", "daysToDeparture"],
+      ["Current Bookings", "currentBookings"],
+      ["Expected Pax", "expectedPassengers"],
+      ["Expected Revenue", "expectedRevenue"],
+      ["Load Factor", "loadFactor"],
+      ["Upgrade", "upgradeSuggestion"],
+      ["Note", "note"]
+    ];
+
+    root.innerHTML = `
+      <h1>Flight Forecast</h1>
+      <input type="text" placeholder="Søg flight eller dato" value="${filterText}" />
+      <table>
+        <thead>
+          <tr>
+            ${headers.map(([label, field]) => `<th data-field="${field}">${label}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map(row => `
+            <tr>
+              ${headers.map(([, field]) => `<td>${row[field] || ""}</td>`).join("")}
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+
+    root.querySelector("input").addEventListener("input", e => {
+      filterText = e.target.value;
+      renderTable();
+    });
+
+    root.querySelectorAll("th").forEach(th => {
+      th.addEventListener("click", () => {
+        const field = th.getAttribute("data-field");
+        if (sortField === field) {
+          sortAsc = !sortAsc;
+        } else {
+          sortField = field;
+          sortAsc = true;
+        }
+        renderTable();
+      });
+    });
+  };
+
+  renderTable();
+});
