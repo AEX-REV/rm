@@ -11,18 +11,14 @@ const DATA_PATH = path.join(__dirname, "public", "data", "current_snapshot.csv")
 const SEAT_CAPACITY = 50;
 const MAX_CAPACITY = 64;
 
-// Sørg for at data-mappen findes
 const dataDir = path.join(__dirname, "public", "data");
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// Middleware
 app.use(express.static("public"));
 app.use(bodyParser.text({ type: "*/*", limit: "100mb" }));
 
-// Ping test
 app.get("/ping", (_, res) => res.send("pong"));
 
-// Parser CSV til JS-objekter
 function parseBookings(callback) {
   const bookings = [];
   fs.createReadStream(DATA_PATH)
@@ -48,70 +44,70 @@ function parseBookings(callback) {
     .on("end", () => callback(bookings));
 }
 
-// Forecast-logik
 function forecastBookings(bookings) {
   const today = new Date();
   const thisYear = today.getFullYear();
   const threeMonthsFromNow = new Date();
   threeMonthsFromNow.setMonth(threeMonthsFromNow.getMonth() + 3);
 
-const upcomingFlights = [];
-const seen = new Set();
-
-bookings.forEach((b) => {
-  const dateKey = b.FlightDate.toISOString().split("T")[0];
-  const key = `${b.FlightNumber}_${dateKey}`;
-  if (
-    b.Year === thisYear &&
-    b.FlightDate >= today &&
-    b.FlightDate <= threeMonthsFromNow &&
-    !seen.has(key)
-  ) {
-    seen.add(key);
-    upcomingFlights.push(b);
-  }
-});
+  const upcomingFlights = bookings.filter(
+    (b) =>
+      b.Year === thisYear &&
+      b.FlightDate >= today &&
+      b.FlightDate <= threeMonthsFromNow
+  );
 
   const results = [];
   const grouped = {};
-  const historicalPatterns = {};
+  const cumulativePatterns = {};
 
+  // Opbyg mønstre for prebook per flight + weekday
   bookings.forEach((b) => {
     const key = `${b.FlightNumber}_${b.Weekday}`;
     if (!grouped[key]) grouped[key] = [];
     grouped[key].push(b);
 
-    if (!historicalPatterns[key]) historicalPatterns[key] = {};
-    const day = b.DaysBefore;
-    if (!historicalPatterns[key][day]) historicalPatterns[key][day] = 0;
-    historicalPatterns[key][day]++;
+    if (!cumulativePatterns[key]) cumulativePatterns[key] = {};
+    const d = b.DaysBefore;
+    if (!cumulativePatterns[key][d]) cumulativePatterns[key][d] = 0;
+    cumulativePatterns[key][d]++;
   });
+
+  // Udregn totals pr. dato
+  const totalFlightsPerKey = {};
+  for (const key in grouped) {
+    totalFlightsPerKey[key] = new Set(grouped[key].map(b => b.FlightDate.toISOString().split("T")[0])).size;
+  }
 
   for (const flight of upcomingFlights) {
     const key = `${flight.FlightNumber}_${flight.Weekday}`;
+    const pattern = cumulativePatterns[key] || {};
+    const totalPastFlights = totalFlightsPerKey[key] || 1;
+
     const currentBookings = bookings.filter(
       (b) =>
         b.FlightNumber === flight.FlightNumber &&
         b.FlightDate.getTime() === flight.FlightDate.getTime()
     );
-
-    const daysToDeparture = Math.floor((flight.FlightDate - today) / (1000 * 60 * 60 * 24));
     const currentCount = currentBookings.length;
+    const daysToDeparture = Math.floor((flight.FlightDate - today) / (1000 * 60 * 60 * 24));
 
-    const historicalSameFlight = grouped[key] || [];
-    const pattern = historicalPatterns[key] || {};
-    const totalPastFlights = new Set(
-      historicalSameFlight.map((b) => b.FlightDate.toISOString().split("T")[0])
-    ).size;
-
-    let futureRatio = 0;
-    for (let d = daysToDeparture + 1; d <= 90; d++) {
-      futureRatio += (pattern[d] || 0);
+    // Beregn gennemsnitlig prebook-kurve
+    const cumulative = {};
+    for (let i = 0; i <= 90; i++) {
+      cumulative[i] = (pattern[i] || 0) / totalPastFlights;
     }
-    const pastRatio = Object.values(pattern).reduce((a, b) => a + b, 0);
-    const trend = pastRatio ? futureRatio / pastRatio : 0;
 
-    const expectedPassengers = Math.round(currentCount + currentCount * trend);
+    // Beregn antal der normalt er booket op til nu
+    let bookedSoFar = 0;
+    for (let i = 90; i >= daysToDeparture; i--) {
+      bookedSoFar += cumulative[i] || 0;
+    }
+
+    const totalPattern = Object.values(cumulative).reduce((a, b) => a + b, 0);
+    const remainingRatio = totalPattern > 0 ? (totalPattern - bookedSoFar) / totalPattern : 0;
+
+    const expectedPassengers = Math.round(currentCount / (bookedSoFar / totalPattern || 1));
     const avgPrice = currentBookings.reduce((sum, b) => sum + b.Price, 0) / (currentCount || 1);
     const expectedRevenue = Math.round(avgPrice * expectedPassengers);
     const loadFactor = Math.min(100, Math.round((expectedPassengers / SEAT_CAPACITY) * 100));
@@ -127,14 +123,13 @@ bookings.forEach((b) => {
       loadFactor: `${loadFactor}%`,
       upgradeSuggestion:
         expectedPassengers > 60 ? "Overvej at åbne op til 64 pladser" : "",
-      note: `Fremskrevet baseret på ${currentCount} pax og ${trend.toFixed(2)}x forventet kurve`,
+      note: `Fremskrevet baseret på ${currentCount} pax og ${(1 / (bookedSoFar / totalPattern || 1)).toFixed(2)}x forventet kurve`,
     });
   }
 
   return results.sort((a, b) => new Date(a.flightDate) - new Date(b.flightDate));
 }
 
-// Forecast API
 app.get("/api/forecast", (req, res) => {
   parseBookings((bookings) => {
     const forecast = forecastBookings(bookings);
@@ -142,7 +137,6 @@ app.get("/api/forecast", (req, res) => {
   });
 });
 
-// Upload API
 app.post("/upload", (req, res) => {
   const rawData = req.body;
   if (!rawData || typeof rawData !== "string") {
@@ -159,7 +153,6 @@ app.post("/upload", (req, res) => {
   });
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`✅ RM server kører på http://localhost:${PORT}`);
 });
