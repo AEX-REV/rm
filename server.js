@@ -59,6 +59,7 @@ function forecastBookings(bookings) {
   const threeMonthsFromNow = new Date();
   threeMonthsFromNow.setMonth(threeMonthsFromNow.getMonth() + 3);
 
+  // Upcoming flights in next 3 months
   const upcomingFlights = bookings.filter(
     b => b.Year === thisYear && b.FlightDate >= today && b.FlightDate <= threeMonthsFromNow
   );
@@ -82,25 +83,21 @@ function forecastBookings(bookings) {
     historyCounts[key] = dates.size;
   });
 
-  // Precompute booking stats: avgCumCounts & avgTotalBookings
+  // Precompute booking stats: avgCumCounts for bookings in last d days
   const bookingStats = {};
   Object.entries(groupedHistory).forEach(([key, hist]) => {
     const flightCount = historyCounts[key] || 1;
     const maxDay = Math.max(...Object.keys(hist).map(Number), 90);
 
-    // avgCumCounts[d] = average number of bookings from now (day d) until departure (day 0)
-    // Compute forward cumulative: sum hist[i] for i = 0..d
+    // avgCumCounts[d] = avg # of bookings historically occurring from d days before departure until departure
     const avgCumCounts = {};
-    let runningSumFwd = 0;
+    let runningSum = 0;
     for (let d = 0; d <= maxDay; d++) {
-      runningSumFwd += hist[d] || 0;
-      avgCumCounts[d] = runningSumFwd / flightCount;
+      runningSum += hist[d] || 0;
+      avgCumCounts[d] = runningSum / flightCount;
     }
 
-    // avgTotalBookings = avgCumCounts[maxDay] = total average bookings per flight
-    const avgTotalBook = avgCumCounts[maxDay] || SEAT_CAPACITY;
-
-    bookingStats[key] = { avgCumCounts, avgTotalBook };
+    bookingStats[key] = { avgCumCounts };
   });
 
   const results = [];
@@ -111,18 +108,17 @@ function forecastBookings(bookings) {
       b => b.FlightNumber === flight.FlightNumber && b.FlightDate.getTime() === flight.FlightDate.getTime()
     ).length;
 
-    const stats = bookingStats[key] || { avgCumCounts: {}, avgTotalBook: SEAT_CAPACITY };
+    const stats = bookingStats[key] || { avgCumCounts: {} };
     const avgCum = stats.avgCumCounts;
-    const avgTotal = stats.avgTotalBook;
 
-    // Additional expected from now until departure
-    const avgBookedSoFar = avgCum[daysToDep] || 0;
-    const additionalExpected = avgTotal - avgBookedSoFar;
+    // Expected additional bookings = historical avg bookings from now until departure
+    const additionalExpected = Math.round(avgCum[daysToDep] || 0);
 
-    // Final expected = current actual + normal additional
-    const rawExpected = currentCount + Math.round(additionalExpected);
+    // Final expected = current actual + expected additional, capped at MAX_CAPACITY
+    const rawExpected = currentCount + additionalExpected;
     const expectedPassengers = Math.min(rawExpected, MAX_CAPACITY);
 
+    // Revenue & load factor
     const avgPrice = bookings
       .filter(b => b.FlightNumber === flight.FlightNumber && b.FlightDate.getTime() === flight.FlightDate.getTime())
       .reduce((sum, b) => sum + b.Price, 0) / (currentCount || 1);
@@ -140,7 +136,7 @@ function forecastBookings(bookings) {
       loadFactor,
       upgradeSuggestion:
         expectedPassengers > SEAT_CAPACITY ? `Overvej at åbne op til ${MAX_CAPACITY} pladser` : "",
-      note: `Fremskrevet: ${currentCount} faktiske + ${Math.round(additionalExpected)} forventede billetter`,
+      note: `Fremskrevet: ${currentCount} faktiske + ${additionalExpected} forventede billetter`,
     });
   });
 
