@@ -1,29 +1,47 @@
+// script.js
+// Front-end binding med deduplikering før rendering
 
 document.addEventListener("DOMContentLoaded", async () => {
   const root = document.getElementById("root");
 
+  // Hent forecast-data fra API
   const response = await fetch("/api/forecast");
-  const data = await response.json();
+  let data = await response.json();
+
+  // ─── Deduplikér på flight + dato ─────────────────────────────────────────
+  {
+    const seen = new Set();
+    const deduped = [];
+    data.forEach(row => {
+      const key = `${row.flight}_${row.flightDate}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(row);
+      }
+    });
+    data = deduped;
+  }
+  // ────────────────────────────────────────────────────────────────────────────
 
   let filterText = "";
   let sortField = "flightDate";
   let sortAsc = true;
 
+  // Render-funktion, der laver filter, sort og binder til DOM
   const renderTable = () => {
     let filtered = data.filter(item =>
       item.flight.toLowerCase().includes(filterText.toLowerCase()) ||
       item.flightDate.includes(filterText)
     );
 
+    // Sortér
     filtered.sort((a, b) => {
-      const valA = a[sortField];
-      const valB = b[sortField];
-      if (typeof valA === "string") {
-        return sortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
-      }
-      return sortAsc ? valA - valB : valB - valA;
+      const av = a[sortField];
+      const bv = b[sortField];
+      return (av > bv ? 1 : av < bv ? -1 : 0) * (sortAsc ? 1 : -1);
     });
 
+    // Generér tabel-HTML
     const headers = [
       ["Flight", "flight"],
       ["Date", "flightDate"],
@@ -43,33 +61,34 @@ document.addEventListener("DOMContentLoaded", async () => {
       <table>
         <thead>
           <tr>
-            ${headers.map(([label, field]) => `<th data-field="${field}">${label}</th>`).join("")}
+            ${headers.map(([title]) => `<th data-field="${title.toLowerCase().replace(/ /g, '')}">${title}</th>`).join('')}
           </tr>
         </thead>
         <tbody>
           ${filtered.map(row => `
             <tr>
-              ${headers.map(([, field]) => `<td>${row[field] || ""}</td>`).join("")}
+              <td>${row.flight}</td>
+              <td>${row.flightDate}</td>
+              <td>${row.weekday}</td>
+              <td>${row.daysToDeparture}</td>
+              <td>${row.currentBookings}</td>
+              <td>${row.expectedPassengers}</td>
+              <td>${row.expectedRevenue}</td>
+              <td>${row.loadFactor}</td>
+              <td>${row.upgradeSuggestion}</td>
+              <td>${row.note}</td>
             </tr>
-          `).join("")}
+          `).join('')}
         </tbody>
       </table>
     `;
 
-    root.querySelector("input").addEventListener("input", e => {
-      filterText = e.target.value;
-      renderTable();
-    });
-
-    root.querySelectorAll("th").forEach(th => {
-      th.addEventListener("click", () => {
-        const field = th.getAttribute("data-field");
-        if (sortField === field) {
-          sortAsc = !sortAsc;
-        } else {
-          sortField = field;
-          sortAsc = true;
-        }
+    // Events til headers for sort
+    document.querySelectorAll('th').forEach(th => {
+      th.addEventListener('click', () => {
+        const field = th.getAttribute('data-field');
+        if (sortField === field) sortAsc = !sortAsc;
+        else { sortField = field; sortAsc = true; }
         renderTable();
       });
     });
